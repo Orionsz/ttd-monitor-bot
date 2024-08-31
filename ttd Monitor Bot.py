@@ -1,12 +1,11 @@
 import requests
 from bs4 import BeautifulSoup
-import time
 import telegram
 from telegram.ext import Application, CommandHandler, CallbackContext
 from datetime import datetime, timedelta
 import asyncio
 
-# Replace with your own values
+# Telegram Bot Token and chat ID (replace with your own values)
 TELEGRAM_BOT_TOKEN = 'YOUR_TELEGRAM_BOT_TOKEN_HERE'
 TELEGRAM_CHAT_ID = 'YOUR_TELEGRAM_CHAT_ID_HERE'
 
@@ -16,7 +15,7 @@ login_url = "http://www.ttdsales.com/66bit/login.php"
 # URL for the page containing the workers information after login
 data_url = "http://www.ttdsales.com/66bit/index.php"
 
-# Login credentials - replace with your own
+# Login credentials
 login_data = {
     'username': 'YOUR_USERNAME_HERE',
     'password': 'YOUR_PASSWORD_HERE'
@@ -27,10 +26,25 @@ bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
 
 # Default settings
 check_interval = 5  # in minutes
-inactive_time = 30  # in minutes by default
+inactive_time_min = 30  # in minutes
+inactive_time_max = 1440  # in minutes (24 hours)
 
 # List to store ignored workers
 ignored_workers = []
+
+# Welcome message
+welcome_message = (
+    "🤖 *Welcome to the ttd Monitor Bot, made by Barny Rubull!*\n\n"
+    "Here are the available commands:\n\n"
+    "🔧 `/ig <worker_number(s)>` - Ignore a specific worker or workers by ID (e.g., `/ig 5,6`)\n"
+    "🔧 `/igall <hours>` - Ignore all workers inactive for more than a certain number of hours (e.g., `/igall 3`, default 24)\n"
+    "⏱️ `/checkinterval <minutes>` - Set the interval for checks (1 to 120 minutes, default 5)\n"
+    "⏰ `/inactive <minutes>` - Set the inactivity threshold (10 to 60 minutes, default 30)\n"
+    "ℹ️ `/start` or `/help` - Show this help message again"
+)
+
+# Flag to track if the welcome message has been sent
+welcome_message_sent = False
 
 # Function to convert the "Last Seen" time from format "23h 14m 36s" to a timedelta object
 def parse_last_seen(time_str):
@@ -57,6 +71,7 @@ def is_valid_last_seen_format(time_str):
 
 # Function to check the status of the workers
 async def check_servers():
+    global welcome_message_sent
     print("Checking servers...")  # Debugging message
     with requests.Session() as session:
         # Perform the login
@@ -70,16 +85,20 @@ async def check_servers():
             print("Data page retrieved, parsing workers...")  # Debugging message
             soup = BeautifulSoup(data_page.content, 'html.parser')
 
+            # Send welcome message only on the first check
+            if not welcome_message_sent:
+                await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=welcome_message, parse_mode="Markdown")
+                welcome_message_sent = True
+
             # Extract information about each worker (depends on the structure of the website)
-            workers = soup.find_all('tr')  # Adjust according to the actual structure
+            workers = soup.find_all('tr')
 
             inactive_workers = []
             current_time = datetime.now()
 
             for worker in workers:
-                # Assuming you have multiple columns: ID, Name, Ranges, Speed, Last Seen
                 columns = worker.find_all('td')
-                if len(columns) < 5:  # if there are not enough columns, skip this entry
+                if len(columns) < 5:
                     continue
                 worker_id = columns[0].text.strip()
                 worker_name = columns[1].text.strip()
@@ -88,11 +107,10 @@ async def check_servers():
                 # Debugging output
                 print(f"Worker: {worker_name}, Last Seen: {last_seen}")
 
-                # Check if last_seen is in the correct format
                 if is_valid_last_seen_format(last_seen):
                     try:
-                        # Convert last_seen to a time difference (timedelta)
                         last_seen_delta = parse_last_seen(last_seen)
+                        time_since_last_seen = datetime.now() - datetime.now() + last_seen_delta
                     except ValueError as e:
                         print(f"Error parsing time for worker {worker_name}: {e}")
                         continue
@@ -100,32 +118,34 @@ async def check_servers():
                     print(f"Unexpected format for last_seen: {last_seen}")
                     continue
 
-                # Check if more than inactive_time minutes have passed since last activity
-                if last_seen_delta > timedelta(minutes=inactive_time) and worker_id not in ignored_workers:
+                # Check if last seen is between 30 minutes and 24 hours ago
+                if timedelta(minutes=inactive_time_min) <= time_since_last_seen <= timedelta(minutes=inactive_time_max) and worker_id not in ignored_workers:
                     inactive_workers.append((worker_id, worker_name, last_seen))
 
             if inactive_workers:
                 for worker_id, worker_name, last_seen in inactive_workers:
-                    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"Worker {worker_name} (ID: {worker_id}) has not sent a solution in the last {inactive_time} minutes. Last seen {last_seen} ago.")
+                    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"Worker {worker_name} (ID: {worker_id}) has been inactive for {last_seen}.")
             else:
-                await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"All workers crack normally! Next check in {check_interval * 60} seconds.")
+                print("No inactive workers found in the specified time range.")
         else:
             print("Login failed. Please check your credentials or login URL.")
 
 # Function to ignore specific workers
 async def ignore_worker(update, context: CallbackContext):
     if len(context.args) > 0:
-        worker_number = context.args[0]
-        ignored_workers.append(worker_number)
-        await update.message.reply_text(f"Worker {worker_number} is now ignored.")
+        worker_numbers = context.args[0].split(',')
+        for number in worker_numbers:
+            worker_number = number.strip()
+            ignored_workers.append(worker_number)
+            await update.message.reply_text(f"Worker {worker_number} is now ignored.")
     else:
-        await update.message.reply_text("Please provide a worker number to ignore.")
+        await update.message.reply_text("Please provide worker numbers to ignore, separated by commas.")
 
 # Function to ignore all workers inactive for a given time
 async def ignore_all_workers(update, context: CallbackContext):
     try:
-        hours = int(context.args[0]) if len(context.args) > 0 else 23  # Default to 23 hours if no argument is given
-        if 1 <= hours <= 23:
+        hours = int(context.args[0]) if len(context.args) > 0 else 24  # Default to 24 hours if no argument is given
+        if 1 <= hours <= 24:
             print(f"Ignoring all workers inactive for more than {hours} hours.")
             threshold = timedelta(hours=hours)
 
@@ -161,7 +181,7 @@ async def ignore_all_workers(update, context: CallbackContext):
                 else:
                     await update.message.reply_text("Login failed. Please check your credentials or login URL.")
         else:
-            await update.message.reply_text("Please provide a value between 1 and 23 hours.")
+            await update.message.reply_text("Please provide a value between 1 and 24 hours.")
     except ValueError:
         await update.message.reply_text("Please provide a valid number.")
 
@@ -174,6 +194,7 @@ async def set_check_interval(update, context: CallbackContext):
             if 1 <= interval <= 120:
                 check_interval = interval
                 await update.message.reply_text(f"Check interval set to {check_interval} minutes.")
+                await check_servers()  # Immediately run a check after setting the interval
             else:
                 await update.message.reply_text("Please provide a value between 1 and 120 minutes.")
         except ValueError:
@@ -183,33 +204,25 @@ async def set_check_interval(update, context: CallbackContext):
 
 # Function to set inactive time
 async def set_inactive_time(update, context: CallbackContext):
-    global inactive_time
+    global inactive_time_min
     if len(context.args) > 0:
         try:
             time_inactive = int(context.args[0])
             if 10 <= time_inactive <= 60:
-                inactive_time = time_inactive
-                await update.message.reply_text(f"Inactive time set to {inactive_time} minutes.")
+                inactive_time_min = time_inactive
+                await update.message.reply_text(f"Inactive time set to {inactive_time_min} minutes.")
             else:
                 await update.message.reply_text("Please provide a value between 10 and 60 minutes.")
         except ValueError:
             await update.message.reply_text("Please provide a valid number.")
     else:
         await update.message.reply_text("Inactive time reset to default of 30 minutes.")
-        inactive_time = 30
+        inactive_time_min = 30
 
-# Start command to initiate the bot
+# Start/help command to show the welcome message
 async def start(update, context: CallbackContext):
-    print("Received /start command")  # Debugging message
-    await update.message.reply_text(
-        "🤖 *Welcome to the ttd Monitor Bot, made by Barny Rubull!*\n\n"
-        "Here are the available commands:\n\n"
-        "🔧 `/ig <worker_number>` - Ignore a specific worker (e.g., `/ig 343874`)\n"
-        "🔧 `/igall <hours>` - Ignore all workers inactive for more than a certain number of hours (e.g., `/igall 3`, default 23)\n"
-        "⏱️ `/checkinterval <minutes>` - Set the interval for checks (1 to 120 minutes, default 5)\n"
-        "⏰ `/inactive <minutes>` - Set the inactivity threshold (10 to 60 minutes, default 30)\n"
-        "ℹ️ `/start` - Show this help message again"
-    )
+    print("Received /start or /help command")  # Debugging message
+    await update.message.reply_text(welcome_message, parse_mode="Markdown")
 
 # Asynchronous function to repeatedly check servers
 async def scheduled_check():
@@ -222,27 +235,22 @@ async def scheduled_check():
 def main():
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # Command to ignore a worker
     application.add_handler(CommandHandler("ig", ignore_worker))
-
-    # Command to ignore all workers inactive for a specified time
     application.add_handler(CommandHandler("igall", ignore_all_workers))
-
-    # Command to set check interval
     application.add_handler(CommandHandler("checkinterval", set_check_interval))
-
-    # Command to set inactive time
     application.add_handler(CommandHandler("inactive", set_inactive_time))
-
-    # Start command
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", start))
 
-    # Start the bot and the scheduled checks concurrently
     print("Starting bot...")
     loop = asyncio.get_event_loop()
     loop.create_task(scheduled_check())
     application.run_polling()
     print("Bot started successfully!")
+
+if __name__ == '__main__':
+    print("Running main function...")
+    main()
 
 if __name__ == '__main__':
     print("Running main function...")
