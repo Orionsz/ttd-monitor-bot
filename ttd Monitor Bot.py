@@ -1,11 +1,11 @@
 import requests
 from bs4 import BeautifulSoup
 import telegram
-from telegram.ext import Application, CommandHandler, CallbackContext
+from telegram.ext import Application, CommandHandler, CallbackContext, MessageHandler, filters
 from datetime import datetime, timedelta
 import asyncio
 
-# Telegram Bot Token and chat ID (replace with your own values)
+# Telegram Bot Token and chat ID
 TELEGRAM_BOT_TOKEN = 'YOUR_TELEGRAM_BOT_TOKEN_HERE'
 TELEGRAM_CHAT_ID = 'YOUR_TELEGRAM_CHAT_ID_HERE'
 
@@ -29,17 +29,19 @@ check_interval = 5  # in minutes
 inactive_time_min = 30  # in minutes
 inactive_time_max = 1440  # in minutes (24 hours)
 
-# List to store ignored workers
+# List to store ignored worker identifiers
 ignored_workers = []
 
 # Welcome message
 welcome_message = (
     "🤖 *Welcome to the ttd Monitor Bot, made by Barny Rubull!*\n\n"
+    "ℹ️ This bot monitors workers and sends notifications if they become inactive based on specified parameters.\n"
+    "It will not send any messages if all workers are functioning normally.\n\n"
     "Here are the available commands:\n\n"
-    "🔧 `/ig <worker_number(s)>` - Ignore a specific worker or workers by ID (e.g., `/ig 5,6`)\n"
+    "🔧 `/ig <worker_number(s)>` - Ignore workers by Clore number (e.g., `/ig 348063` will ignore all workers with that Clore number)\n"
     "🔧 `/igall <hours>` - Ignore all workers inactive for more than a certain number of hours (e.g., `/igall 3`, default 24)\n"
     "⏱️ `/checkinterval <minutes>` - Set the interval for checks (1 to 120 minutes, default 5)\n"
-    "⏰ `/inactive <minutes>` - Set the inactivity threshold (10 to 60 minutes, default 30)\n"
+    "⏰ `/inactive <minutes>` - Set the inactivity threshold (5 to 180 minutes, default 30)\n"
     "ℹ️ `/start` or `/help` - Show this help message again"
 )
 
@@ -104,6 +106,13 @@ async def check_servers():
                 worker_name = columns[1].text.strip()
                 last_seen = columns[4].text.strip()
 
+                # Extract the Clore number from the worker's name
+                clore_number = worker_name.split('-')[1] if 'Clore-' in worker_name else None
+
+                if not clore_number:
+                    print(f"Could not extract Clore number from worker name: {worker_name}")
+                    continue
+
                 # Debugging output
                 print(f"Worker: {worker_name}, Last Seen: {last_seen}")
 
@@ -119,27 +128,32 @@ async def check_servers():
                     continue
 
                 # Check if last seen is between 30 minutes and 24 hours ago
-                if timedelta(minutes=inactive_time_min) <= time_since_last_seen <= timedelta(minutes=inactive_time_max) and worker_id not in ignored_workers:
-                    inactive_workers.append((worker_id, worker_name, last_seen))
+                if timedelta(minutes=inactive_time_min) <= time_since_last_seen <= timedelta(minutes=inactive_time_max):
+                    # Ignore workers if their Clore number is in the ignored list
+                    if clore_number not in ignored_workers:
+                        inactive_workers.append((worker_id, worker_name, last_seen))
 
             if inactive_workers:
                 for worker_id, worker_name, last_seen in inactive_workers:
-                    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"Worker {worker_name} (ID: {worker_id}) has been inactive for {last_seen}.")
+                    await bot.send_message(
+                        chat_id=TELEGRAM_CHAT_ID,
+                        text=f"💤 Worker {worker_name} (ID: {worker_id}) has been inactive for {last_seen} ⌛."
+                    )
             else:
                 print("No inactive workers found in the specified time range.")
         else:
             print("Login failed. Please check your credentials or login URL.")
 
-# Function to ignore specific workers
+# Function to ignore specific workers by their Clore number
 async def ignore_worker(update, context: CallbackContext):
     if len(context.args) > 0:
-        worker_numbers = context.args[0].split(',')
-        for number in worker_numbers:
-            worker_number = number.strip()
-            ignored_workers.append(worker_number)
-            await update.message.reply_text(f"Worker {worker_number} is now ignored.")
+        clore_numbers = context.args[0].split(',')
+        for clore_number in clore_numbers:
+            clore_number = clore_number.strip()
+            ignored_workers.append(clore_number)
+            await update.message.reply_text(f"Workers with Clore number {clore_number} are now ignored.")
     else:
-        await update.message.reply_text("Please provide worker numbers to ignore, separated by commas.")
+        await update.message.reply_text("Please provide Clore numbers to ignore, separated by commas.")
 
 # Function to ignore all workers inactive for a given time
 async def ignore_all_workers(update, context: CallbackContext):
@@ -175,8 +189,12 @@ async def ignore_all_workers(update, context: CallbackContext):
                                 continue
 
                             if last_seen_delta > threshold:
-                                ignored_workers.append(worker_id)
-                                print(f"Ignored worker {worker_name} (ID: {worker_id})")
+                                clore_number = worker_name.split('-')[1] if 'Clore-' in worker_name else None
+                                if clore_number:
+                                    # Only ignore workers that are currently inactive for more than the specified hours
+                                    if clore_number not in ignored_workers:
+                                        ignored_workers.append(clore_number)
+                                        print(f"Ignored workers with Clore number {clore_number}")
                     await update.message.reply_text(f"Ignored all workers inactive for more than {hours} hours.")
                 else:
                     await update.message.reply_text("Login failed. Please check your credentials or login URL.")
@@ -208,16 +226,26 @@ async def set_inactive_time(update, context: CallbackContext):
     if len(context.args) > 0:
         try:
             time_inactive = int(context.args[0])
-            if 10 <= time_inactive <= 60:
+            if 5 <= time_inactive <= 180:
                 inactive_time_min = time_inactive
                 await update.message.reply_text(f"Inactive time set to {inactive_time_min} minutes.")
             else:
-                await update.message.reply_text("Please provide a value between 10 and 60 minutes.")
+                await update.message.reply_text("Please provide a value between 5 and 180 minutes.")
         except ValueError:
             await update.message.reply_text("Please provide a valid number.")
     else:
         await update.message.reply_text("Inactive time reset to default of 30 minutes.")
         inactive_time_min = 30
+
+# Function to handle unknown commands
+async def unknown_command(update, context: CallbackContext):
+    await update.message.reply_text(
+        "Unknown command. Please use one of the following:\n"
+        "/checkinterval\n"
+        "/inactive\n"
+        "/ig\n"
+        "/igall"
+    )
 
 # Start/help command to show the welcome message
 async def start(update, context: CallbackContext):
@@ -242,15 +270,14 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", start))
 
+    # Add handler for unknown commands
+    application.add_handler(MessageHandler(filters.Command, unknown_command))
+
     print("Starting bot...")
     loop = asyncio.get_event_loop()
     loop.create_task(scheduled_check())
     application.run_polling()
     print("Bot started successfully!")
-
-if __name__ == '__main__':
-    print("Running main function...")
-    main()
 
 if __name__ == '__main__':
     print("Running main function...")
