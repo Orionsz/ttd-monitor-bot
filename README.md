@@ -49,3 +49,5 @@ Once the bot is running, you can use the following commands in your Telegram cha
 Notes
 The login_url and data_url in the script are already set for the TTD platform and do not need to be changed.
 Make sure your bot has the necessary permissions to send messages in the specified chat.
+
+"I created this bot to help everyone in the pool, and of course, it’s free. But if you’re feeling generous and would like to support the development of this bot and other similar projects, you can send Bitcoin to this address: bc1pkjdkx0vgscv3xs902ueunksldq7s2x7m6xrnqp3ue5pateuazqjseds7ct  I would be immensely grateful for both the Bitcoin and your feedback."
