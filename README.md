@@ -53,3 +53,4 @@ Make sure your bot has the necessary permissions to send messages in the specifi
 I created this bot to help everyone in the pool, and of course, it’s free.
 But if you’re feeling generous and would like to support the development of this bot and other similar projects, you can send a few satoshis to this address: bc1pkjdkx0vgscv3xs902ueunksldq7s2x7m6xrnqp3ue5pateuazqjseds7ct
  I would be immensely grateful for both the satoshis and your feedback.
+Clore - AUKHgX4fiPxsHCnjWggwCRz98t8vWHW8Gy
